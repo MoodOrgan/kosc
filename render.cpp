@@ -1,9 +1,19 @@
+#ifdef __INTELLISENSE__
+#include "./stubs/Bela.h"
+#include "./stubs/Gui.h"
+#include "./stubs/GuiController.h"
+#else
 #include <Bela.h>
 #include <libraries/Gui/Gui.h>
 #include <libraries/GuiController/GuiController.h>
+#endif
 #include <stdlib.h>
 #include <math.h>
+#ifdef __INTELLISENSE__
+#include "./stubs/math_neon.h"
+#else
 #include <libraries/math_neon/math_neon.h>
+#endif
 
 #define NUM_OSCS 15
 #define NUM_CHANNELS 2
@@ -26,9 +36,6 @@ float omega[NUM_OSCS];
 float theta[NUM_CHANNELS][NUM_OSCS];
 float excitationScale[NUM_OSCS];
 float injectionBoost[NUM_OSCS];
-
-float gInputEnvelope[NUM_CHANNELS] = {0, 0};
-const float gEnvSmooth = 0.99999f;
 
 float gPrevF0 = 55.0f;
 
@@ -194,7 +201,7 @@ bool setup(BelaContext *context, void *userData) {
     controller.setup(&gui, "Harmonic Resonator");
 
     gF0SliderIdx            = controller.addSlider("F0 (Hz)",           55.0,     0.0, 1024.0,  0.1);
-    gKSpreadSliderIdx       = controller.addSlider("Spread",             0.5,     0.0,   1.05,  0.001);
+    gKSpreadSliderIdx       = controller.addSlider("Spread",             0.5,     0.0,    1.5,  0.001);
     gInputRotateASliderIdx  = controller.addSlider("Input A Rotation",   0.5,     0.0,    1.0,  0.001);
     gInputRotateBSliderIdx  = controller.addSlider("Input B Rotation",   0.5,     0.0,    1.0,  0.001);
     gOutputRotateASliderIdx = controller.addSlider("Output A Rotation",  0.5,     0.0,    1.0,  0.001);
@@ -217,7 +224,8 @@ void render(BelaContext *context, void *userData) {
     float nodeAttack    = controller.getSliderValue(gNodeAttackSliderIdx);
     float nodeDecay     = controller.getSliderValue(gNodeDecaySliderIdx);
 
-    if(f0 != gPrevF0) {
+    // Avoid filter coefficient churn from tiny slider jitter.
+    if(fabsf(f0 - gPrevF0) > 1e-6f) {
         updateFrequencies(context, f0);
         gPrevF0 = f0;
     }
@@ -266,28 +274,24 @@ void render(BelaContext *context, void *userData) {
         float input[NUM_CHANNELS];
         for(int ch = 0; ch < NUM_CHANNELS; ch++) {
             input[ch] = audioRead(context, frame, ch);
-            gInputEnvelope[ch] = gEnvSmooth * gInputEnvelope[ch]
-                               + (1.0f - gEnvSmooth) * fabsf(input[ch]);
         }
 
         float oscOut[NUM_CHANNELS][NUM_OSCS];
 
         for(int ch = 0; ch < NUM_CHANNELS; ch++) {
-
-            // injection weights — equal power crossfade between adjacent nodes
-            float injWeight[NUM_OSCS] = {0};
-            injWeight[inNode[ch]]     += inGain[ch];
-            injWeight[inNodeNext[ch]] += inGainNext[ch];
-            for(int i = 0; i < NUM_OSCS; i++)
-                injWeight[i] = fminf(injWeight[i], 1.0f);
-
             // per-node: bandpass, envelope, phase accumulation
             for(int i = 0; i < NUM_OSCS; i++) {
+                // Injection scanner only addresses two adjacent nodes.
+                float inj = 0.0f;
+                if(i == inNode[ch])     inj += inGain[ch];
+                if(i == inNodeNext[ch]) inj += inGainNext[ch];
+                inj = fminf(inj, 1.0f);
+
                 // excitationScale reduces subharmonic injection (harder to excite)
                 // injectionBoost compensates so subharmonics still respond
                 // net effect: sqrt(mult[i]) — compressed asymmetry
                 float bandSig = processBiquad(bpFilters[ch][i],
-                    input[ch] * injWeight[i]
+                    input[ch] * inj
                     * excitationScale[i] * injectionBoost[i]);
                 float target  = fabsf(bandSig);
                 if(target > nodeEnvelope[ch][i])

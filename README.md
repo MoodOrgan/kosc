@@ -43,6 +43,7 @@ Per audio frame, each channel does:
 - `settings.json`: Bela runtime/audio/analog configuration
 - `.bela-host`: default SSH target host for deploy tooling
 - `.vscode/tasks.json`: Cursor tasks for deploy/sync/stop via `bela-tools`
+- `stubs/`: editor-only fallback headers used by IntelliSense on macOS when Bela SDK headers are not installed locally
 - `.gitignore`: local artifact exclusions
 
 ## Development workflow (Cursor + bela-tools)
@@ -70,6 +71,16 @@ If you want to evolve the patch while keeping behavior predictable:
 - Try different envelope curves in the node attack/decay branch
 - Replace sine output with lightweight waveshaping per node
 - Add optional per-node damping tied to frequency region
+
+## Planned roadmap
+
+The next design steps for this instrument:
+
+- Sync behavior between channels (e.g. channel 2 sync'd to channel 1 for lambdoma-style behavior)
+- Expose raw oscillator output on analog outs for constant-amplitude harmonic scanning
+- Move GUI controls toward CV control inputs across available analog channels
+- Continue pushing "alive"/physical-modeling response and performative compensation behavior
+  (for example stronger drive expectation on low/subharmonic resonators)
 
 ## Notes
 
