@@ -29,6 +29,8 @@ unsigned int gOutputRotateASliderIdx;
 unsigned int gOutputRotateBSliderIdx;
 unsigned int gNodeAttackSliderIdx;
 unsigned int gNodeDecaySliderIdx;
+// Dev-only macro control. Planned to map to CV (not an extra permanent UI control).
+unsigned int gEnergyReserveSliderIdx;
 
 float amplitude = 0.4f;
 
@@ -52,6 +54,7 @@ const float nodeBandwidth = 0.5f;
 float couplingWeights[NUM_OSCS][NUM_OSCS];
 float couplingWeightSum[NUM_OSCS];
 float nodeBrightness[NUM_OSCS];
+float gChannelEnergy[NUM_CHANNELS] = {0.0f, 0.0f};
 
 // frequency-ordered: subharmonics ascending, f0, harmonics ascending
 // node: 0      1      2      3      4      5      6      7    8    9    10   11   12   13   14
@@ -219,6 +222,7 @@ bool setup(BelaContext *context, void *userData) {
     gOutputRotateBSliderIdx = controller.addSlider("Output B Rotation",  0.5,     0.0,    1.0,  0.001);
     gNodeAttackSliderIdx    = controller.addSlider("Node Env Attack",    0.99,    0.9,  0.9999, 0.0001);
     gNodeDecaySliderIdx     = controller.addSlider("Node Env Decay",     0.9995,  0.9,  0.9999, 0.0001);
+    gEnergyReserveSliderIdx = controller.addSlider("Energy Reserve (DEV)", 0.45,   0.0,    1.0,  0.001);
 
     srand(42);
     initOscillators(context, 55.0f);
@@ -234,6 +238,7 @@ void render(BelaContext *context, void *userData) {
     float outputRotateB = controller.getSliderValue(gOutputRotateBSliderIdx);
     float nodeAttack    = controller.getSliderValue(gNodeAttackSliderIdx);
     float nodeDecay     = controller.getSliderValue(gNodeDecaySliderIdx);
+    float energyReserve = controller.getSliderValue(gEnergyReserveSliderIdx);
 
     // Avoid filter coefficient churn from tiny slider jitter.
     if(fabsf(f0 - gPrevF0) > 1e-6f) {
@@ -347,6 +352,36 @@ void render(BelaContext *context, void *userData) {
                     1.05f
                 );
             }
+
+            // Limited energy store per channel:
+            // external input replenishes energy, while active resonance spends it.
+            float inputAbs = fabsf(input[ch]);
+            // Nonlinear mapping for stronger audible range from the same 0..1 control.
+            float reserveCurve = energyReserve * energyReserve;
+            float activeBudgetScale = 0.2f + 1.8f * reserveCurve;
+            float replenishScale = 0.0003f + 0.02f * reserveCurve;
+            float leakScale = 0.004f * (1.0f - reserveCurve) + 0.00008f;
+
+            float replenish = replenishScale * inputAbs;
+            gChannelEnergy[ch] = fminf(gChannelEnergy[ch] + replenish, 2.2f);
+
+            float sumSq = 0.0f;
+            for(int i = 0; i < NUM_OSCS; i++)
+                sumSq += nodeEnvelope[ch][i] * nodeEnvelope[ch][i];
+            float meanSq = sumSq / (float)NUM_OSCS;
+
+            float budgetMeanSq = (0.002f + 0.01f * reserveCurve)
+                               + activeBudgetScale * 0.22f * gChannelEnergy[ch];
+            if(meanSq > budgetMeanSq && meanSq > 1e-9f) {
+                float scale = sqrtf(budgetMeanSq / meanSq);
+                for(int i = 0; i < NUM_OSCS; i++)
+                    nodeEnvelope[ch][i] *= scale;
+            }
+
+            float spreadSpend = 0.0012f + 0.0055f * KSpread;
+            float spend = meanSq * spreadSpend;
+            float leak  = leakScale;
+            gChannelEnergy[ch] = fmaxf(gChannelEnergy[ch] - spend - leak, 0.0f);
         }
 
         float outA = oscOut[0][outNodeA] * gainNodeA
