@@ -51,6 +51,7 @@ const float nodeBandwidth = 0.5f;
 
 float couplingWeights[NUM_OSCS][NUM_OSCS];
 float couplingWeightSum[NUM_OSCS];
+float nodeBrightness[NUM_OSCS];
 
 // frequency-ordered: subharmonics ascending, f0, harmonics ascending
 // node: 0      1      2      3      4      5      6      7    8    9    10   11   12   13   14
@@ -90,9 +91,8 @@ int igcd(int a, int b) {
 void buildCouplingWeights() {
     // asymmetric coupling: couplingWeights[i][j] = how strongly j drives i
     // ratio = mult[j]/mult[i] expressed as num_r/den_r in lowest terms
-    // weight = 1/num_r — lower numerator means j is a simpler multiple of i
-    // subharmonics couple strongly upward (j < i means ratio > 1, num_r small)
-    // harmonics couple weakly downward (j > i means ratio < 1, num_r large)
+    // default law favors simple ratios with a soft cap to avoid 1.0 plateaus.
+    // define KOSC_LEGACY_COUPLING to restore the original 1/num_r behavior.
     for(int i = 0; i < NUM_OSCS; i++) {
         couplingWeightSum[i] = 0.0f;
         for(int j = 0; j < NUM_OSCS; j++) {
@@ -110,10 +110,18 @@ void buildCouplingWeights() {
             int g   = igcd(num, den);
             int num_r = num / g;
             int den_r = den / g;
-            (void)den_r; // suppress unused warning
 
+#ifdef KOSC_LEGACY_COUPLING
             float w = 1.0f / (float)num_r;
-            couplingWeights[i][j] = (w > 0.05f) ? w : 0.0f;
+#else
+            // Penalize both numerator and denominator complexity, then apply
+            // directional bias: lower->higher tends to drive more than higher->lower.
+            float complexity = (float)num_r + 0.35f * (float)(den_r - 1);
+            float base = 1.0f / complexity;
+            float asymmetry = (mult[j] < mult[i]) ? 1.15f : 0.8f;
+            float w = fminf(base * asymmetry, 0.72f);
+#endif
+            couplingWeights[i][j] = (w > 0.035f) ? w : 0.0f;
             couplingWeightSum[i] += couplingWeights[i][j];
         }
     }
@@ -129,6 +137,9 @@ void buildExcitationScale() {
         // harmonics get 1.0 (no boost, no reduction)
         float boost = sqrtf(fmaxf(1.0f / mult[i], 1.0f));
         injectionBoost[i] = boost;
+
+        // 0.0 at subharmonic floor (f0/8), 1.0 at harmonic ceiling (8*f0)
+        nodeBrightness[i] = fminf(fmaxf(log2f(mult[i] * 8.0f) / 6.0f, 0.0f), 1.0f);
     }
 }
 
@@ -201,7 +212,7 @@ bool setup(BelaContext *context, void *userData) {
     controller.setup(&gui, "Harmonic Resonator");
 
     gF0SliderIdx            = controller.addSlider("F0 (Hz)",           55.0,     0.0, 1024.0,  0.1);
-    gKSpreadSliderIdx       = controller.addSlider("Spread",             0.5,     0.0,    1.5,  0.001);
+    gKSpreadSliderIdx       = controller.addSlider("Spread",             0.5,     0.0,    2.0,  0.001);
     gInputRotateASliderIdx  = controller.addSlider("Input A Rotation",   0.5,     0.0,    1.0,  0.001);
     gInputRotateBSliderIdx  = controller.addSlider("Input B Rotation",   0.5,     0.0,    1.0,  0.001);
     gOutputRotateASliderIdx = controller.addSlider("Output A Rotation",  0.5,     0.0,    1.0,  0.001);
@@ -294,12 +305,25 @@ void render(BelaContext *context, void *userData) {
                     input[ch] * inj
                     * excitationScale[i] * injectionBoost[i]);
                 float target  = fabsf(bandSig);
+
+                // Frequency-dependent damping:
+                // - darker/lower nodes ring longer
+                // - brighter/higher nodes lose energy faster
+                // The global slider still defines the base decay feel.
+                const float maxDecayCeil = 0.9999f;
+                const float minDecayFloor = 0.97f;
+                const float lowRingBias = 0.25f;
+                const float highDampBias = 0.35f;
+                float b = nodeBrightness[i];
+                float slowerDecay = nodeDecay + (maxDecayCeil - nodeDecay) * lowRingBias * (1.0f - b);
+                float effectiveDecay = slowerDecay - (slowerDecay - minDecayFloor) * highDampBias * b;
+
                 if(target > nodeEnvelope[ch][i])
                     nodeEnvelope[ch][i] = nodeAttack * nodeEnvelope[ch][i]
                                         + (1.0f - nodeAttack) * target;
                 else
-                    nodeEnvelope[ch][i] = nodeDecay  * nodeEnvelope[ch][i]
-                                        + (1.0f - nodeDecay)  * target;
+                    nodeEnvelope[ch][i] = effectiveDecay  * nodeEnvelope[ch][i]
+                                        + (1.0f - effectiveDecay)  * target;
 
                 theta[ch][i] += omega[i];
                 if(theta[ch][i] >  M_PI) theta[ch][i] -= 2.0f * M_PI;
