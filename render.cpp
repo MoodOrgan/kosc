@@ -29,8 +29,6 @@ unsigned int gOutputRotateASliderIdx;
 unsigned int gOutputRotateBSliderIdx;
 unsigned int gNodeAttackSliderIdx;
 unsigned int gNodeDecaySliderIdx;
-// Dev-only macro control. Planned to map to CV (not an extra permanent UI control).
-unsigned int gEnergyReserveSliderIdx;
 
 float amplitude = 0.4f;
 
@@ -55,6 +53,7 @@ float couplingWeights[NUM_OSCS][NUM_OSCS];
 float couplingWeightSum[NUM_OSCS];
 float nodeBrightness[NUM_OSCS];
 float gChannelEnergy[NUM_CHANNELS] = {0.0f, 0.0f};
+const float gEnergyReserve = 0.45f;
 
 // frequency-ordered: subharmonics ascending, f0, harmonics ascending
 // node: 0      1      2      3      4      5      6      7    8    9    10   11   12   13   14
@@ -222,7 +221,6 @@ bool setup(BelaContext *context, void *userData) {
     gOutputRotateBSliderIdx = controller.addSlider("Output B Rotation",  0.5,     0.0,    1.0,  0.001);
     gNodeAttackSliderIdx    = controller.addSlider("Node Env Attack",    0.99,    0.9,  0.9999, 0.0001);
     gNodeDecaySliderIdx     = controller.addSlider("Node Env Decay",     0.9995,  0.9,  0.9999, 0.0001);
-    gEnergyReserveSliderIdx = controller.addSlider("Energy Reserve (DEV)", 0.45,   0.0,    1.0,  0.001);
 
     srand(42);
     initOscillators(context, 55.0f);
@@ -238,7 +236,7 @@ void render(BelaContext *context, void *userData) {
     float outputRotateB = controller.getSliderValue(gOutputRotateBSliderIdx);
     float nodeAttack    = controller.getSliderValue(gNodeAttackSliderIdx);
     float nodeDecay     = controller.getSliderValue(gNodeDecaySliderIdx);
-    float energyReserve = controller.getSliderValue(gEnergyReserveSliderIdx);
+    float energyReserve = gEnergyReserve;
 
     // Avoid filter coefficient churn from tiny slider jitter.
     if(fabsf(f0 - gPrevF0) > 1e-6f) {
