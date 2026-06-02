@@ -1,0 +1,7 @@
+# Bela build artifacts (if you ever build locally)
+build/
+*.o
+*.d
+
+# macOS
+.DS_Store

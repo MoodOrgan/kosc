@@ -1,0 +1,39 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Bela: Deploy",
+      "type": "shell",
+      "command": "${env:HOME}/scripts/bela-tools/bela deploy ${workspaceFolder}",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Bela: Sync only",
+      "type": "shell",
+      "command": "${env:HOME}/scripts/bela-tools/bela sync ${workspaceFolder}",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Bela: Stop",
+      "type": "shell",
+      "command": "${env:HOME}/scripts/bela-tools/bela stop",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
