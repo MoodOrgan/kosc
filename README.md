@@ -1,46 +1,49 @@
 # kosc
 
-Dual-spectrum harmonic resonator for Bela Gem Multi — edit on Mac in Cursor, deploy with `bela-tools`.
+Dual-ladder harmonic resonator for Bela Gem Multi — edit on Mac in Cursor, deploy with `bela-tools`.
 
-## Spectra
+## Spectra (ladders)
 
-Two **node lists** (11 nodes each), ratios: ⅛, ⅙, ¼, ⅓, ½, 1, ³⁄₂, 2, ⁵⁄₂, 3, ⁷⁄₂ of each spectrum’s F0:
+Two **node ladders** (11 rungs each), ratios: ⅛, ⅙, ¼, ⅓, ½, 1, ³⁄₂, 2, ⁵⁄₂, 3, ⁷⁄₂ of each ladder’s F0:
 
-- **Spectrum A** (audio out L): detuned **down** from center `F0`
-- **Spectrum B** (audio out R): detuned **up** from center `F0`
-- At **Detune = 0**, same frequencies and **phase-locked** oscillators
+- **Ladder A** (audio out L): detuned **down** from center `F0`
+- **Ladder B** (audio out R): detuned **up** from center `F0`
+- Ladders always run with independent phases (detune floored at `FLT_MIN` when the slider is at zero)
 
 ## I/O (current wiring)
 
 | Jack | Path |
 |------|------|
-| **Audio in 0 / 1** | **All in** A / B — uniform drive on every node (+ cross-spectrum feedback bus) |
-| **Audio out 0 / 1** | **Scan out** A / B — crossfade between adjacent nodes (`Output A/B Scan` CV) |
-| **SYNC A / B** | Digital inputs → rising edge resets that spectrum’s phases |
+| **Audio in 0 / 1** | **All in** A / B — uniform drive on every node |
+| **Audio out 0 / 1** | **Scan out** A / B — crossfade between adjacent rungs (`Output A/B Scan` CV) |
+| **SYNC** (digital in 0) | Rising edge resets **both** ladders (shared F0) |
 
-Scan in on dedicated jacks is planned; **Input A/B Scan** CV is reserved for that. **Output A/B Scan** drives main audio outputs.
+Scan in on dedicated jacks is planned; **Input A/B Scan** CV is reserved for that.
 
 ## Signal flow (per frame)
 
-1. **All in** on audio + cross-spectrum bus per spectrum
+1. **All in** on audio per ladder
 2. Per node: uniform drive → bandpass → envelope → sine (slow family-correlated drift)
-3. Coupling (**Spread**) through short memory + energy budget
-4. **Scan out** on main audio outputs (Output A/B Scan CV)
+3. **Node coupling** — envelope diffusion along each ladder (ratio-weighted)
+4. **Ladder coupling** — same diffusion law across matching rungs on the other ladder
+5. Energy budget + coupling memory on both paths
+6. **Scan out** on main audio outputs
 
-## Controls (GUI — dev; map to 8 CV + digital SYNC)
+## Controls (GUI — dev; map to CV + digital SYNC)
 
 | Control | Role |
 |--------|------|
-| F0 (Hz) | Center frequency |
+| F0 (Hz) | Center frequency (both ladders) |
 | Detune | A = F0×(1−d), B = F0×(1+d) |
 | Osc Phase | Global offset [0, 2π] |
-| Spread | Coupling / diffusion |
+| Node Coupling | Intra-ladder envelope diffusion [0, 2] |
+| Ladder Coupling | Cross-ladder envelope diffusion (symmetric) [0, 2] |
 | Input A/B Scan | Reserved for future scan-in jacks |
 | Output A/B Scan | Scan-out position on main audio outputs |
-| A bus → B in / B bus → A in | Cross-spectrum feed [0, 2] |
 | Node Env Attack / Decay | Envelope shape |
-| In A/B Peak (1=clip) | Main audio input peak hold — **≥ 1.0 ≈ clip** (label turns red via `sketch.js`) |
-| Out A/B Peak (1=clip) | Main audio output peak hold — same scale and clip styling |
+| In/Out A/B Peak (1=clip) | Peak hold meters (aux task → GUI) |
+
+**Planned:** coupling sliders as **macros** (envelope decay and other controls interact — needs careful tuning).
 
 Internal: energy reserve, drift depth, coupling memory (`render.cpp`).
 

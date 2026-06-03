@@ -10,6 +10,7 @@
 #endif
 #include <stdlib.h>
 #include <math.h>
+#include <float.h>
 #ifdef __INTELLISENSE__
 #include "./stubs/math_neon.h"
 #else
@@ -21,9 +22,8 @@
 #define SPEC_A 0
 #define SPEC_B 1
 
-// Digital SYNC (gate/trigger jacks)
-#define SYNC_DIGITAL_A 0
-#define SYNC_DIGITAL_B 1
+// Digital SYNC (gate/trigger) — one input resets both ladders (shared F0)
+#define SYNC_DIGITAL 0
 
 // Main audio I/O (ch 0/1): all-in / all-out for now.
 // Dedicated scan jacks + analog CV outs (ch 2+) when scan path is wired up.
@@ -33,13 +33,12 @@ GuiController controller;
 unsigned int gF0SliderIdx;
 unsigned int gDetuneSliderIdx;
 unsigned int gGlobalPhaseSliderIdx;
-unsigned int gKSpreadSliderIdx;
+unsigned int gNodeCouplingSliderIdx;
+unsigned int gLadderCouplingSliderIdx;
 unsigned int gInputScanASliderIdx;
 unsigned int gInputScanBSliderIdx;
 unsigned int gOutputScanASliderIdx;
 unsigned int gOutputScanBSliderIdx;
-unsigned int gSpecAToBSliderIdx;
-unsigned int gSpecBToASliderIdx;
 unsigned int gNodeAttackSliderIdx;
 unsigned int gNodeDecaySliderIdx;
 unsigned int gInPeakASliderIdx;
@@ -61,18 +60,7 @@ float loudnessWeight[NUM_OSCS];
 
 float gPrevF0Center = 55.0f;
 float gPrevDetune = 0.0f;
-float gFeedbackBus[NUM_CHANNELS] = {0.0f, 0.0f};
-float gFeedbackActivity[NUM_CHANNELS] = {0.0f, 0.0f};
-int gSyncPrev[NUM_CHANNELS] = {0, 0};
-
-// Cross-spectrum feedback: envelope bus + soft gate (single multiply, not gate²)
-const float kFeedbackBusGain = 3.25f;
-const float kFeedbackRawBleed = 0.38f;
-const float kFeedbackMinOpen = 0.42f;
-const float kFeedbackAttack = 0.9f;
-const float kFeedbackRelease = 0.996f;
-const float kFeedbackActAttack = 0.78f;
-const float kFeedbackActRelease = 0.997f;
+int gSyncPrev = 0;
 
 struct Biquad {
     float b0, b1, b2, a1, a2;
@@ -97,8 +85,9 @@ const float kDriftLfoHz[3] = {0.037f, 0.059f, 0.043f};
 const float kDriftFamilyDepth = 0.0016f;
 const float kDriftNodeDepth = 0.00035f;
 
-// Coupling memory: smoothed cross-node drive (one-pole per node)
+// Coupling memory: smoothed drive (one-pole per node)
 float gCouplingDrive[NUM_CHANNELS][NUM_OSCS];
+float gLadderCouplingDrive[NUM_CHANNELS][NUM_OSCS];
 const float kCouplingMemCoeff = 0.997f;
 
 // 1/8 … 1, 3/2 … 7/2 (just intonation–friendly set)
@@ -110,6 +99,10 @@ const int multNum[NUM_OSCS] = { 1, 1, 1, 1, 1, 1, 3, 2, 5, 3, 7 };
 const int multDen[NUM_OSCS] = { 8, 6, 4, 3, 2, 1, 2, 1, 2, 1, 2 };
 
 static const float kInvNumOscs = 1.0f / (float)NUM_OSCS;
+
+inline float effectiveDetune(float detune) {
+    return fmaxf(detune, FLT_MIN);
+}
 
 float getFrequency(int i, float f0) {
     return f0 * mult[i];
@@ -237,14 +230,19 @@ void resetSpectrumPhase(int ch) {
     for(int i = 0; i < NUM_OSCS; i++) {
         theta[ch][i] = 0.0f;
         gCouplingDrive[ch][i] = 0.0f;
+        gLadderCouplingDrive[ch][i] = 0.0f;
     }
-    gFeedbackBus[ch] = 0.0f;
-    gFeedbackActivity[ch] = 0.0f;
+}
+
+void resetAllSpectra() {
+    resetSpectrumPhase(SPEC_A);
+    resetSpectrumPhase(SPEC_B);
 }
 
 void initOscillators(BelaContext *context, float f0Center, float detune) {
-    float f0A = f0Center * (1.0f - detune);
-    float f0B = f0Center * (1.0f + detune);
+    float d = effectiveDetune(detune);
+    float f0A = f0Center * (1.0f - d);
+    float f0B = f0Center * (1.0f + d);
     updateFrequencies(context, SPEC_A, f0A);
     updateFrequencies(context, SPEC_B, f0B);
     for(int ch = 0; ch < NUM_CHANNELS; ch++) {
@@ -254,6 +252,7 @@ void initOscillators(BelaContext *context, float f0Center, float detune) {
             theta[ch][i] = 0.0f;
             nodeEnvelope[ch][i] = 0.0f;
             gCouplingDrive[ch][i] = 0.0f;
+            gLadderCouplingDrive[ch][i] = 0.0f;
         }
     }
 }
@@ -320,13 +319,12 @@ bool setup(BelaContext *context, void *userData) {
     gF0SliderIdx            = controller.addSlider("F0 (Hz)",            55.0,    0.0, 1024.0, 0.1);
     gDetuneSliderIdx        = controller.addSlider("Detune",            0.003,    0.0,    0.05, 0.0001);
     gGlobalPhaseSliderIdx   = controller.addSlider("Osc Phase",           0.0,    0.0,  6.2832, 0.001);
-    gKSpreadSliderIdx       = controller.addSlider("Spread",              0.1,    0.0,    1.0, 0.001);
+    gNodeCouplingSliderIdx   = controller.addSlider("Node Coupling",       0.1,    0.0,    2.0, 0.001);
+    gLadderCouplingSliderIdx = controller.addSlider("Ladder Coupling",     0.0,    0.0,    2.0, 0.001);
     gInputScanASliderIdx    = controller.addSlider("Input A Scan",        0.5,    0.0,    1.0, 0.001);
     gInputScanBSliderIdx    = controller.addSlider("Input B Scan",        0.5,    0.0,    1.0, 0.001);
     gOutputScanASliderIdx   = controller.addSlider("Output A Scan",       0.5,    0.0,    1.0, 0.001);
     gOutputScanBSliderIdx   = controller.addSlider("Output B Scan",       0.5,    0.0,    1.0, 0.001);
-    gSpecAToBSliderIdx      = controller.addSlider("A bus -> B in",       0.0,    0.0,    2.0, 0.001);
-    gSpecBToASliderIdx      = controller.addSlider("B bus -> A in",       0.0,    0.0,    2.0, 0.001);
     gNodeAttackSliderIdx    = controller.addSlider("Node Env Attack",     0.91,   0.9, 0.9999, 0.0001);
     gNodeDecaySliderIdx     = controller.addSlider("Node Env Decay",      0.92,   0.9, 0.9999, 0.0001);
     gInPeakASliderIdx       = controller.addSlider("In A Peak (1=clip)",  0.0,    0.0, 1.2, 0.001);
@@ -335,31 +333,31 @@ bool setup(BelaContext *context, void *userData) {
     gOutPeakBSliderIdx      = controller.addSlider("Out B Peak (1=clip)", 0.0,    0.0, 1.2, 0.001);
 
     // Digital I/O setup
-    pinMode(context, 0, SYNC_DIGITAL_A, INPUT);
-    pinMode(context, 0, SYNC_DIGITAL_B, INPUT);
+    pinMode(context, 0, SYNC_DIGITAL, INPUT);
 
     AuxiliaryTask meterTask = Bela_createAuxiliaryTask(meterGuiTask, 0, "meter-gui", NULL);
     Bela_scheduleAuxiliaryTask(meterTask);
 
     initOscillators(context, 55.0f, 0.0f);
     gPrevF0Center = 55.0f;
-    gPrevDetune = 0.0f;
+    gPrevDetune = effectiveDetune(0.0f);
     return true;
 }
 
 void render(BelaContext *context, void *userData) {
     float f0Center      = controller.getSliderValue(gF0SliderIdx);
-    float detune        = controller.getSliderValue(gDetuneSliderIdx);
+    float detuneRaw       = controller.getSliderValue(gDetuneSliderIdx);
+    float detune          = effectiveDetune(detuneRaw);
     float globalPhase   = controller.getSliderValue(gGlobalPhaseSliderIdx);
-    float KSpread       = controller.getSliderValue(gKSpreadSliderIdx);
+    float nodeCoupling    = controller.getSliderValue(gNodeCouplingSliderIdx);
+    float ladderCoupling  = controller.getSliderValue(gLadderCouplingSliderIdx);
     float inputScanA    = controller.getSliderValue(gInputScanASliderIdx);
     float inputScanB    = controller.getSliderValue(gInputScanBSliderIdx);
     float outputScanA   = controller.getSliderValue(gOutputScanASliderIdx);
     float outputScanB   = controller.getSliderValue(gOutputScanBSliderIdx);
-    float specAToB      = controller.getSliderValue(gSpecAToBSliderIdx);
-    float specBToA      = controller.getSliderValue(gSpecBToASliderIdx);
     float nodeAttack    = controller.getSliderValue(gNodeAttackSliderIdx);
     float nodeDecay     = controller.getSliderValue(gNodeDecaySliderIdx);
+    const float couplingSpend = nodeCoupling + 0.5f * ladderCoupling;
     const float energyReserve = gEnergyReserve;
     const float reserveCurve = energyReserve * energyReserve;
     const float activeBudgetScale = 0.2f + 1.8f * reserveCurve;
@@ -369,7 +367,6 @@ void render(BelaContext *context, void *userData) {
 
     float f0A = f0Center * (1.0f - detune);
     float f0B = f0Center * (1.0f + detune);
-    const bool phaseLocked = (detune < 1e-5f);
 
     if(fabsf(f0Center - gPrevF0Center) > 1e-6f || fabsf(detune - gPrevDetune) > 1e-6f) {
         updateFrequencies(context, SPEC_A, f0A);
@@ -391,30 +388,26 @@ void render(BelaContext *context, void *userData) {
     computeOutputScan(outputScanB, outNodeB, outNodeB_next, gainNodeB, gainNextB);
 
     for(unsigned int n = 0; n < context->digitalFrames; n++) {
-        int syncA = digitalRead(context, n, SYNC_DIGITAL_A);
-        int syncB = digitalRead(context, n, SYNC_DIGITAL_B);
-        if(syncA && !gSyncPrev[SPEC_A]) resetSpectrumPhase(SPEC_A);
-        if(syncB && !gSyncPrev[SPEC_B]) resetSpectrumPhase(SPEC_B);
-        gSyncPrev[SPEC_A] = syncA ? 1 : 0;
-        gSyncPrev[SPEC_B] = syncB ? 1 : 0;
+        int sync = digitalRead(context, n, SYNC_DIGITAL);
+        if(sync && !gSyncPrev)
+            resetAllSpectra();
+        gSyncPrev = sync ? 1 : 0;
     }
 
     for(int frame = 0; frame < context->audioFrames; frame++) {
 
+        float preEnv[NUM_CHANNELS][NUM_OSCS];
+        float nodeSin[NUM_CHANNELS][NUM_OSCS];
         float oscOut[NUM_CHANNELS][NUM_OSCS];
+        float inputAbs[NUM_CHANNELS];
 
         for(int ch = 0; ch < NUM_CHANNELS; ch++) {
             float allIn = audioRead(context, frame, ch);
-            float inAbs = fabsf(allIn);
-            gInPeakHold[ch] = fmaxf(inAbs, gInPeakHold[ch] * kPeakDecay);
-            if(ch == SPEC_A)
-                allIn += gFeedbackBus[SPEC_B] * specBToA;
-            else
-                allIn += gFeedbackBus[SPEC_A] * specAToB;
+            inputAbs[ch] = fabsf(allIn);
+            gInPeakHold[ch] = fmaxf(inputAbs[ch], gInPeakHold[ch] * kPeakDecay);
 
             advanceDriftLfo(context, ch);
 
-            float nodeSin[NUM_OSCS];
             for(int i = 0; i < NUM_OSCS; i++) {
                 float bandSig = processBiquad(bpFilters[ch][i],
                     allIn * excitationScale[i] * injectionBoost[i]);
@@ -428,39 +421,41 @@ void render(BelaContext *context, void *userData) {
                                         + (1.0f - nodeEffectiveDecay[i]) * target;
 
                 float drift = nodeDriftAmount(ch, i);
-                if(!phaseLocked || ch == SPEC_A) {
-                    theta[ch][i] += omega[ch][i] * (1.0f + drift);
-                    if(theta[ch][i] >  M_PI) theta[ch][i] -= 2.0f * M_PI;
-                    if(theta[ch][i] < -M_PI) theta[ch][i] += 2.0f * M_PI;
-                } else {
-                    theta[ch][i] = theta[SPEC_A][i];
-                }
+                theta[ch][i] += omega[ch][i] * (1.0f + drift);
+                if(theta[ch][i] >  M_PI) theta[ch][i] -= 2.0f * M_PI;
+                if(theta[ch][i] < -M_PI) theta[ch][i] += 2.0f * M_PI;
 
-                nodeSin[i] = sinf_neon(theta[ch][i] + globalPhase);
+                nodeSin[ch][i] = sinf_neon(theta[ch][i] + globalPhase);
+                preEnv[ch][i] = nodeEnvelope[ch][i];
             }
+        }
 
-            float prevEnv[NUM_OSCS];
-            for(int i = 0; i < NUM_OSCS; i++) prevEnv[i] = nodeEnvelope[ch][i];
-
+        for(int ch = 0; ch < NUM_CHANNELS; ch++) {
+            const int other = 1 - ch;
             for(int i = 0; i < NUM_OSCS; i++) {
-                float maxContrib = 0.0f;
+                float intraMax = 0.0f;
+                float ladderMax = preEnv[other][i];
                 for(int j = 0; j < NUM_OSCS; j++) {
                     float w = couplingWeights[i][j];
                     if(w == 0.0f) continue;
-                    float contrib = prevEnv[j] * w;
-                    if(contrib > maxContrib) maxContrib = contrib;
+                    float intra = preEnv[ch][j] * w;
+                    if(intra > intraMax) intraMax = intra;
+                    float cross = preEnv[other][j] * w;
+                    if(cross > ladderMax) ladderMax = cross;
                 }
                 gCouplingDrive[ch][i] = kCouplingMemCoeff * gCouplingDrive[ch][i]
-                                      + (1.0f - kCouplingMemCoeff) * maxContrib;
+                                      + (1.0f - kCouplingMemCoeff) * intraMax;
+                gLadderCouplingDrive[ch][i] = kCouplingMemCoeff * gLadderCouplingDrive[ch][i]
+                                            + (1.0f - kCouplingMemCoeff) * ladderMax;
                 nodeEnvelope[ch][i] = fminf(
-                    fmaxf(nodeEnvelope[ch][i], gCouplingDrive[ch][i] * KSpread),
+                    fmaxf(nodeEnvelope[ch][i],
+                          fmaxf(gCouplingDrive[ch][i] * nodeCoupling,
+                                gLadderCouplingDrive[ch][i] * ladderCoupling)),
                     1.05f
                 );
             }
 
-            float inputAbs = fabsf(allIn);
-
-            gChannelEnergy[ch] = fminf(gChannelEnergy[ch] + replenishScale * inputAbs, 2.2f);
+            gChannelEnergy[ch] = fminf(gChannelEnergy[ch] + replenishScale * inputAbs[ch], 2.2f);
 
             float sumSq = 0.0f;
             for(int i = 0; i < NUM_OSCS; i++)
@@ -474,34 +469,11 @@ void render(BelaContext *context, void *userData) {
                     nodeEnvelope[ch][i] *= scale;
             }
 
-            float spend = meanSq * (0.0012f + 0.0055f * KSpread);
+            float spend = meanSq * (0.0012f + 0.0055f * couplingSpend);
             gChannelEnergy[ch] = fmaxf(gChannelEnergy[ch] - spend - leakScale, 0.0f);
 
-            float busEnv = 0.0f;
-            float busRaw = 0.0f;
-            for(int i = 0; i < NUM_OSCS; i++) {
-                oscOut[ch][i] = nodeSin[i] * nodeEnvelope[ch][i];
-                busEnv += oscOut[ch][i] * loudnessWeight[i];
-                busRaw += nodeSin[i] * loudnessWeight[i];
-            }
-
-            float actTarget = 0.0f;
             for(int i = 0; i < NUM_OSCS; i++)
-                actTarget = fmaxf(actTarget, nodeEnvelope[ch][i]);
-            actTarget = fmaxf(actTarget, fabsf(busEnv));
-
-            float act = gFeedbackActivity[ch];
-            float actCoeff = (actTarget > act) ? kFeedbackActAttack : kFeedbackActRelease;
-            gFeedbackActivity[ch] = actCoeff * act + (1.0f - actCoeff) * actTarget;
-
-            float gate = kFeedbackMinOpen
-                       + (1.0f - kFeedbackMinOpen) * gFeedbackActivity[ch];
-            float busTarget = kFeedbackBusGain * gate
-                            * (busEnv + kFeedbackRawBleed * busRaw);
-            float bus = gFeedbackBus[ch];
-            float busCoeff = (fabsf(busTarget) > fabsf(bus)) ? kFeedbackAttack
-                                                             : kFeedbackRelease;
-            gFeedbackBus[ch] = busCoeff * bus + (1.0f - busCoeff) * busTarget;
+                oscOut[ch][i] = nodeSin[ch][i] * nodeEnvelope[ch][i];
         }
 
         float scanOutA = oscOut[SPEC_A][outNodeA] * gainNodeA
