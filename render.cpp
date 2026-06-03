@@ -85,8 +85,9 @@ const float kDriftLfoHz[3] = {0.037f, 0.059f, 0.043f};
 const float kDriftFamilyDepth = 0.0016f;
 const float kDriftNodeDepth = 0.00035f;
 
-// Coupling memory: smoothed drive (one-pole per node)
-float gCouplingDrive[NUM_CHANNELS][NUM_OSCS];
+// Intra-ladder: signal sum into bandpass (prev-sample oscOut, one tick delay)
+float gPrevOscOut[NUM_CHANNELS][NUM_OSCS];
+// Cross-ladder: envelope coupling memory
 float gLadderCouplingDrive[NUM_CHANNELS][NUM_OSCS];
 const float kCouplingMemCoeff = 0.997f;
 
@@ -229,8 +230,8 @@ void advanceDriftLfo(BelaContext *context, int ch) {
 void resetSpectrumPhase(int ch) {
     for(int i = 0; i < NUM_OSCS; i++) {
         theta[ch][i] = 0.0f;
-        gCouplingDrive[ch][i] = 0.0f;
         gLadderCouplingDrive[ch][i] = 0.0f;
+        gPrevOscOut[ch][i] = 0.0f;
     }
 }
 
@@ -251,8 +252,8 @@ void initOscillators(BelaContext *context, float f0Center, float detune) {
         for(int i = 0; i < NUM_OSCS; i++) {
             theta[ch][i] = 0.0f;
             nodeEnvelope[ch][i] = 0.0f;
-            gCouplingDrive[ch][i] = 0.0f;
             gLadderCouplingDrive[ch][i] = 0.0f;
+            gPrevOscOut[ch][i] = 0.0f;
         }
     }
 }
@@ -409,8 +410,15 @@ void render(BelaContext *context, void *userData) {
             advanceDriftLfo(context, ch);
 
             for(int i = 0; i < NUM_OSCS; i++) {
+                float intraSum = 0.0f;
+                for(int j = 0; j < NUM_OSCS; j++) {
+                    float w = couplingWeights[i][j];
+                    if(w == 0.0f) continue;
+                    intraSum += w * gPrevOscOut[ch][j];
+                }
+                float nodeIn = allIn + nodeCoupling * intraSum;
                 float bandSig = processBiquad(bpFilters[ch][i],
-                    allIn * excitationScale[i] * injectionBoost[i]);
+                    nodeIn * excitationScale[i] * injectionBoost[i]);
                 float target  = fabsf(bandSig);
 
                 if(target > nodeEnvelope[ch][i])
@@ -433,24 +441,18 @@ void render(BelaContext *context, void *userData) {
         for(int ch = 0; ch < NUM_CHANNELS; ch++) {
             const int other = 1 - ch;
             for(int i = 0; i < NUM_OSCS; i++) {
-                float intraMax = 0.0f;
                 float ladderMax = preEnv[other][i];
                 for(int j = 0; j < NUM_OSCS; j++) {
                     float w = couplingWeights[i][j];
                     if(w == 0.0f) continue;
-                    float intra = preEnv[ch][j] * w;
-                    if(intra > intraMax) intraMax = intra;
                     float cross = preEnv[other][j] * w;
                     if(cross > ladderMax) ladderMax = cross;
                 }
-                gCouplingDrive[ch][i] = kCouplingMemCoeff * gCouplingDrive[ch][i]
-                                      + (1.0f - kCouplingMemCoeff) * intraMax;
                 gLadderCouplingDrive[ch][i] = kCouplingMemCoeff * gLadderCouplingDrive[ch][i]
                                             + (1.0f - kCouplingMemCoeff) * ladderMax;
                 nodeEnvelope[ch][i] = fminf(
                     fmaxf(nodeEnvelope[ch][i],
-                          fmaxf(gCouplingDrive[ch][i] * nodeCoupling,
-                                gLadderCouplingDrive[ch][i] * ladderCoupling)),
+                          gLadderCouplingDrive[ch][i] * ladderCoupling),
                     1.05f
                 );
             }
@@ -475,6 +477,10 @@ void render(BelaContext *context, void *userData) {
             for(int i = 0; i < NUM_OSCS; i++)
                 oscOut[ch][i] = nodeSin[ch][i] * nodeEnvelope[ch][i];
         }
+
+        for(int ch = 0; ch < NUM_CHANNELS; ch++)
+            for(int i = 0; i < NUM_OSCS; i++)
+                gPrevOscOut[ch][i] = oscOut[ch][i];
 
         float scanOutA = oscOut[SPEC_A][outNodeA] * gainNodeA
                        + oscOut[SPEC_A][outNodeA_next] * gainNextA;

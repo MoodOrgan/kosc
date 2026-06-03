@@ -23,11 +23,10 @@ Scan in on dedicated jacks is planned; **Input A/B Scan** CV is reserved for tha
 ## Signal flow (per frame)
 
 1. **All in** on audio per ladder
-2. Per node: uniform drive → bandpass → envelope → sine (slow family-correlated drift)
-3. **Node coupling** — envelope diffusion along each ladder (ratio-weighted)
-4. **Ladder coupling** — same diffusion law across matching rungs on the other ladder
-5. Energy budget + coupling memory on both paths
-6. **Scan out** on main audio outputs
+2. Per node: **Node Coupling** — weighted sum of neighbor `oscOut` (prev sample) into bandpass input; bandpass → envelope → sine
+3. **Ladder Coupling** — cross-ladder envelope diffusion (ratio-weighted, smoothed)
+4. Per-ladder energy budget + coupling memory on ladder path
+5. **Scan out** on main audio outputs
 
 ## Controls (GUI — dev; map to CV + digital SYNC)
 
@@ -36,7 +35,7 @@ Scan in on dedicated jacks is planned; **Input A/B Scan** CV is reserved for tha
 | F0 (Hz) | Center frequency (both ladders) |
 | Detune | A = F0×(1−d), B = F0×(1+d) |
 | Osc Phase | Global offset [0, 2π] |
-| Node Coupling | Intra-ladder envelope diffusion [0, 2] |
+| Node Coupling | Intra-ladder signal sum into bandpass (ratio weights, prev-sample) [0, 2] |
 | Ladder Coupling | Cross-ladder envelope diffusion (symmetric) [0, 2] |
 | Input A/B Scan | Reserved for future scan-in jacks |
 | Output A/B Scan | Scan-out position on main audio outputs |
