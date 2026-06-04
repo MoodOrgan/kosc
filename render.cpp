@@ -100,9 +100,33 @@ const int multNum[NUM_OSCS] = { 1, 1, 1, 1, 1, 1, 3, 2, 5, 3, 7 };
 const int multDen[NUM_OSCS] = { 8, 6, 4, 3, 2, 1, 2, 1, 2, 1, 2 };
 
 static const float kInvNumOscs = 1.0f / (float)NUM_OSCS;
+static const float kDetuneMax = 0.05f;
+static const float kDetuneLogK = 4.0f;
 
 inline float effectiveDetune(float detune) {
     return fmaxf(detune, FLT_MIN);
+}
+
+// Detune slider 0..1: most travel is subtle (log-shaped toward kDetuneMax)
+inline float mapDetune(float detuneSlider0to1) {
+    float t = fminf(fmaxf(detuneSlider0to1, 0.0f), 1.0f);
+    float shaped = (expf(kDetuneLogK * t) - 1.0f) / (expf(kDetuneLogK) - 1.0f);
+    return effectiveDetune(kDetuneMax * shaped);
+}
+
+static const float kF0Max = 1024.0f;
+
+inline float clampScan01(float x) {
+    return fminf(fmaxf(x, 0.0f), 1.0f);
+}
+
+inline float clampF0Hz(float hz) {
+    return fminf(fmaxf(hz, 0.0f), kF0Max);
+}
+
+inline int analogFrameForAudio(BelaContext *context, int audioFrame) {
+    if(context->analogFrames == 0) return 0;
+    return (audioFrame * (int)context->analogFrames) / (int)context->audioFrames;
 }
 
 float getFrequency(int i, float f0) {
@@ -240,8 +264,8 @@ void resetAllSpectra() {
     resetSpectrumPhase(SPEC_B);
 }
 
-void initOscillators(BelaContext *context, float f0Center, float detune) {
-    float d = effectiveDetune(detune);
+void initOscillators(BelaContext *context, float f0Center, float detuneSlider0to1) {
+    float d = mapDetune(detuneSlider0to1);
     float f0A = f0Center * (1.0f - d);
     float f0B = f0Center * (1.0f + d);
     updateFrequencies(context, SPEC_A, f0A);
@@ -318,10 +342,10 @@ bool setup(BelaContext *context, void *userData) {
     controller.setup(&gui, "Harmonic Resonator");
 
     gF0SliderIdx            = controller.addSlider("F0 (Hz)",            55.0,    0.0, 1024.0, 0.1);
-    gDetuneSliderIdx        = controller.addSlider("Detune",            0.003,    0.0,    0.05, 0.0001);
+    gDetuneSliderIdx        = controller.addSlider("Detune",            0.18,     0.0,    1.0, 0.001);
     gGlobalPhaseSliderIdx   = controller.addSlider("Osc Phase",           0.0,    0.0,  6.2832, 0.001);
     gNodeCouplingSliderIdx   = controller.addSlider("Node Coupling",       0.1,    0.0,    2.0, 0.001);
-    gLadderCouplingSliderIdx = controller.addSlider("Ladder Coupling",     0.0,    0.0,    2.0, 0.001);
+    gLadderCouplingSliderIdx = controller.addSlider("Ladder Coupling",     0.0,    0.0,    1.0, 0.001);
     gInputScanASliderIdx    = controller.addSlider("Input A Scan",        0.5,    0.0,    1.0, 0.001);
     gInputScanBSliderIdx    = controller.addSlider("Input B Scan",        0.5,    0.0,    1.0, 0.001);
     gOutputScanASliderIdx   = controller.addSlider("Output A Scan",       0.5,    0.0,    1.0, 0.001);
@@ -341,21 +365,24 @@ bool setup(BelaContext *context, void *userData) {
 
     initOscillators(context, 55.0f, 0.0f);
     gPrevF0Center = 55.0f;
-    gPrevDetune = effectiveDetune(0.0f);
+    gPrevDetune = mapDetune(0.0f);
     return true;
 }
 
 void render(BelaContext *context, void *userData) {
-    float f0Center      = controller.getSliderValue(gF0SliderIdx);
+    float cvF0 = 0.0f;
+    if(context->analogFrames > 0)
+        cvF0 = analogRead(context, 0, 2);
+    float f0Center = clampF0Hz(controller.getSliderValue(gF0SliderIdx) + cvF0 * kF0Max);
     float detuneRaw       = controller.getSliderValue(gDetuneSliderIdx);
-    float detune          = effectiveDetune(detuneRaw);
+    float detune          = mapDetune(detuneRaw);
     float globalPhase   = controller.getSliderValue(gGlobalPhaseSliderIdx);
     float nodeCoupling    = controller.getSliderValue(gNodeCouplingSliderIdx);
     float ladderCoupling  = controller.getSliderValue(gLadderCouplingSliderIdx);
     float inputScanA    = controller.getSliderValue(gInputScanASliderIdx);
     float inputScanB    = controller.getSliderValue(gInputScanBSliderIdx);
-    float outputScanA   = controller.getSliderValue(gOutputScanASliderIdx);
-    float outputScanB   = controller.getSliderValue(gOutputScanBSliderIdx);
+    const float outputScanGuiA = controller.getSliderValue(gOutputScanASliderIdx);
+    const float outputScanGuiB = controller.getSliderValue(gOutputScanBSliderIdx);
     float nodeAttack    = controller.getSliderValue(gNodeAttackSliderIdx);
     float nodeDecay     = controller.getSliderValue(gNodeDecaySliderIdx);
     const float couplingSpend = nodeCoupling + 0.5f * ladderCoupling;
@@ -382,11 +409,6 @@ void render(BelaContext *context, void *userData) {
 
     (void)inputScanA;
     (void)inputScanB;
-
-    int outNodeA, outNodeA_next, outNodeB, outNodeB_next;
-    float gainNodeA, gainNextA, gainNodeB, gainNextB;
-    computeOutputScan(outputScanA, outNodeA, outNodeA_next, gainNodeA, gainNextA);
-    computeOutputScan(outputScanB, outNodeB, outNodeB_next, gainNodeB, gainNextB);
 
     for(unsigned int n = 0; n < context->digitalFrames; n++) {
         int sync = digitalRead(context, n, SYNC_DIGITAL);
@@ -481,6 +503,21 @@ void render(BelaContext *context, void *userData) {
         for(int ch = 0; ch < NUM_CHANNELS; ch++)
             for(int i = 0; i < NUM_OSCS; i++)
                 gPrevOscOut[ch][i] = oscOut[ch][i];
+
+        float cvScanA = 0.0f;
+        float cvScanB = 0.0f;
+        if(context->analogFrames > 0) {
+            int af = analogFrameForAudio(context, frame);
+            cvScanA = analogRead(context, af, 0);
+            cvScanB = analogRead(context, af, 1);
+        }
+        float outputScanA = clampScan01(outputScanGuiA + cvScanA);
+        float outputScanB = clampScan01(outputScanGuiB + cvScanB);
+
+        int outNodeA, outNodeA_next, outNodeB, outNodeB_next;
+        float gainNodeA, gainNextA, gainNodeB, gainNextB;
+        computeOutputScan(outputScanA, outNodeA, outNodeA_next, gainNodeA, gainNextA);
+        computeOutputScan(outputScanB, outNodeB, outNodeB_next, gainNodeB, gainNextB);
 
         float scanOutA = oscOut[SPEC_A][outNodeA] * gainNodeA
                        + oscOut[SPEC_A][outNodeA_next] * gainNextA;

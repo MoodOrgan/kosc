@@ -15,7 +15,9 @@ Two **node ladders** (11 rungs each), ratios: ⅛, ⅙, ¼, ⅓, ½, 1, ³⁄₂
 | Jack | Path |
 |------|------|
 | **Audio in 0 / 1** | **All in** A / B — uniform drive on every node |
-| **Audio out 0 / 1** | **Scan out** A / B — crossfade between adjacent rungs (`Output A/B Scan` CV) |
+| **Audio out 0 / 1** | **Scan out** A / B — crossfade between adjacent rungs |
+| **Analog in 0 / 1** | **Output A/B Scan** CV — summed with GUI sliders, clamped 0–1 |
+| **Analog in 2** | **F0** CV — summed with GUI (Hz), clamped 0–1024 |
 | **SYNC** (digital in 0) | Rising edge resets **both** ladders (shared F0) |
 
 Scan in on dedicated jacks is planned; **Input A/B Scan** CV is reserved for that.
@@ -32,11 +34,11 @@ Scan in on dedicated jacks is planned; **Input A/B Scan** CV is reserved for tha
 
 | Control | Role |
 |--------|------|
-| F0 (Hz) | Center frequency (both ladders) |
-| Detune | A = F0×(1−d), B = F0×(1+d) |
+| F0 (Hz) | Center frequency — GUI + analog in 2 (0–1 → +0–1024 Hz), clamped |
+| Detune | 0–1 slider, log-shaped to ±5% max; A/B = F0×(1∓d) |
 | Osc Phase | Global offset [0, 2π] |
 | Node Coupling | Intra-ladder signal sum into bandpass (ratio weights, prev-sample) [0, 2] |
-| Ladder Coupling | Cross-ladder envelope diffusion (symmetric) [0, 2] |
+| Ladder Coupling | Cross-ladder envelope diffusion (symmetric) [0, 1] |
 | Input A/B Scan | Reserved for future scan-in jacks |
 | Output A/B Scan | Scan-out position on main audio outputs |
 | Node Env Attack / Decay | Envelope shape |
